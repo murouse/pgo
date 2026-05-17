@@ -8,6 +8,7 @@ require (
 	github.com/georgysavva/scany/v2 v2.1.4
 	github.com/go-jet/jet/v2 v2.14.1
 	github.com/jackc/pgx/v5 v5.9.1
+	github.com/samber/lo v1.53.0
 )
 
 require (
