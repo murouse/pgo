@@ -23,15 +23,21 @@ func (r *Resource[TID]) Set(ctx context.Context, leftID, rightID TID, opts ...Se
 		SetMap(sq.Eq{
 			r.cfg.LeftColumn:  leftID,
 			r.cfg.RightColumn: rightID,
-		})
+		}).
+		Suffix(fmt.Sprintf("ON CONFLICT ON CONSTRAINT %s DO NOTHING", r.cfg.UniqueIndex))
 
 	return pgo.GetInTx(ctx, r.db, func(ctx context.Context) (bool, error) {
 		if err := cfg.preCheck(ctx); err != nil {
 			return false, fmt.Errorf("pre check: %w", err)
 		}
 
-		_, err := r.db.Exec(ctx, qb)
+		tag, err := r.db.Exec(ctx, qb)
 		if err == nil {
+			// если запись уже была, выходим с false
+			if tag.RowsAffected() == 0 {
+				return false, nil
+			}
+
 			if err = cfg.afterSet(ctx); err != nil {
 				return false, fmt.Errorf("after set: %w", err)
 			}
@@ -45,11 +51,6 @@ func (r *Resource[TID]) Set(ctx context.Context, leftID, rightID TID, opts ...Se
 
 		if cn, ok := pgo.IsForeignKeyViolationError(err); ok && cn == r.cfg.RightForeignKey {
 			return false, r.cfg.RightNotFoundErr
-		}
-
-		// если запись уже была, выходим с false
-		if cn, ok := pgo.IsDuplicateKeyError(err); ok && cn == r.cfg.UniqueIndex {
-			return false, nil
 		}
 
 		return false, fmt.Errorf("insert: %w", err)
