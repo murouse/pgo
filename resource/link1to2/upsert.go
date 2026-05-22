@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/lib/pq"
 	"github.com/murouse/pgo"
 	"github.com/murouse/pgo/resource"
 	"github.com/samber/lo"
@@ -18,8 +18,9 @@ type (
 )
 
 type upsertConfig struct {
-	preCheck    resource.QueryFunc
-	afterUpsert afterUpsertFunc
+	preCheck     resource.QueryFunc
+	afterUpsert  afterUpsertFunc
+	postgresType string
 }
 
 // Upsert атомарно синхронизирует связи «один-ко-многим» для указанной левой сущности (leftID).
@@ -38,7 +39,7 @@ type upsertConfig struct {
 //   - error: ошибку Config.DataIntegrityErr, если левая или какая-либо из правых сущностей
 //     не найдены/удалены. Либо системную ошибку работы с базой данных.
 func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, opts ...UpsertOption) (bool, error) {
-	cfg := buildUpsertConfig(opts)
+	cfg := buildUpsertConfig[TID](opts)
 	insertedRightIDs := lo.Uniq(rightIDs) // защита от дублей
 
 	// Блокируем родительскую запись
@@ -61,10 +62,11 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, 
 	qInsert := fmt.Sprintf(`
 	  INSERT INTO %s (%s, %s)
 	  SELECT $1, input.%s
-	  FROM unnest($2) AS input(%s) -- unnest($2::int[])
+	  FROM unnest($2::%s[]) AS input(%s) -- unnest($2::int[])
 	  JOIN %s r ON r.id = input.%s AND r.deleted_at IS NULL
 	`, r.cfg.LinkTable, r.cfg.LeftColumnID, r.cfg.RightColumnID,
 		r.cfg.RightColumnID,
+		cfg.postgresType,
 		r.cfg.RightColumnID,
 		r.cfg.RightTable,
 		r.cfg.RightColumnID,
@@ -92,7 +94,7 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, 
 		if len(insertedRightIDs) == 0 {
 			isModified = len(deletedRightIDs) != 0
 		} else {
-			tag, err := r.db.Exec(ctx, pgo.Sql(qInsert, leftID, pq.Array(insertedRightIDs)))
+			tag, err := r.db.Exec(ctx, pgo.Sql(qInsert, leftID, insertedRightIDs))
 			if err != nil {
 				return false, fmt.Errorf("insert: %w", err)
 			}
@@ -111,10 +113,28 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, 
 	})
 }
 
-func buildUpsertConfig(opts []UpsertOption) *upsertConfig {
+// getPostgresType маппит Go-тип идентификатора в соответствующий тип в PostgreSQL.
+func getPostgresType[T any]() string {
+	var dummy T
+	switch any(dummy).(type) {
+	case int64, int:
+		return "bigint"
+	case int32:
+		return "int"
+	case string:
+		return "text"
+	case uuid.UUID:
+		return "uuid"
+	default:
+		return "bigint"
+	}
+}
+
+func buildUpsertConfig[TID any](opts []UpsertOption) *upsertConfig {
 	cfg := &upsertConfig{
-		preCheck:    func(_ context.Context) error { return nil },
-		afterUpsert: func(_ context.Context, _ bool) error { return nil },
+		preCheck:     func(_ context.Context) error { return nil },
+		afterUpsert:  func(_ context.Context, _ bool) error { return nil },
+		postgresType: getPostgresType[TID](),
 	}
 
 	for _, opt := range opts {
@@ -135,5 +155,11 @@ func WithPreCheckUnset(preCheck resource.QueryFunc) UpsertOption {
 func WithAfterUnset(afterUnset afterUpsertFunc) UpsertOption {
 	return func(cfg *upsertConfig) {
 		cfg.afterUpsert = afterUnset
+	}
+}
+
+func WithPostgresType(postgresType string) UpsertOption {
+	return func(cfg *upsertConfig) {
+		cfg.postgresType = postgresType
 	}
 }
