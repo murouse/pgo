@@ -69,10 +69,11 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 }
 
 // Close gracefully closes the underlying connection pool.
-func (c *Client) Close() {
+func (c *Client) Close() error {
 	if c.pool != nil {
 		c.pool.Close()
 	}
+	return nil
 }
 
 // Pool exposes underlying pgxpool.Pool for advanced usage.
