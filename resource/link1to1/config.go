@@ -1,4 +1,4 @@
-package link
+package link1to1
 
 type Config struct {
 	Table       string
