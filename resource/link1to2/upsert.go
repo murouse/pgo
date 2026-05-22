@@ -7,6 +7,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
+	"github.com/lib/pq"
 	"github.com/murouse/pgo"
 	"github.com/murouse/pgo/resource"
 	"github.com/samber/lo"
@@ -91,7 +92,7 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, 
 		if len(insertedRightIDs) == 0 {
 			isModified = len(deletedRightIDs) != 0
 		} else {
-			tag, err := r.db.Exec(ctx, pgo.Sql(qInsert, leftID, insertedRightIDs))
+			tag, err := r.db.Exec(ctx, pgo.Sql(qInsert, leftID, pq.Array(insertedRightIDs)))
 			if err != nil {
 				return false, fmt.Errorf("insert: %w", err)
 			}
