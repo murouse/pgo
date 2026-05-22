@@ -61,7 +61,7 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, 
 	  INSERT INTO %s (%s, %s)
 	  SELECT $1, input.%s
 	  FROM unnest($2) AS input(%s) -- unnest($2::int[])
-	  JOIN %s right ON right.id = input.%s AND right.deleted_at IS NULL
+	  JOIN %s r ON r.id = input.%s AND r.deleted_at IS NULL
 	`, r.cfg.LinkTable, r.cfg.LeftColumnID, r.cfg.RightColumnID,
 		r.cfg.RightColumnID,
 		r.cfg.RightColumnID,
