@@ -8,8 +8,18 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
 	"github.com/murouse/pgo"
+	"github.com/murouse/pgo/resource"
 	"github.com/samber/lo"
 )
+
+type (
+	afterUpsertFunc func(ctx context.Context, isModified bool) error
+)
+
+type upsertConfig struct {
+	preCheck    resource.QueryFunc
+	afterUpsert afterUpsertFunc
+}
 
 // Upsert атомарно синхронизирует связи «один-ко-многим» для указанной левой сущности (leftID).
 // Он заменяет текущий набор связанных правых сущностей на новый список (rightIDs).
@@ -26,7 +36,8 @@ import (
 //     или состав связанных сущностей); false, если итоговый набор связей остался прежним.
 //   - error: ошибку Config.DataIntegrityErr, если левая или какая-либо из правых сущностей
 //     не найдены/удалены. Либо системную ошибку работы с базой данных.
-func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID) (bool, error) {
+func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID, opts ...UpsertOption) (bool, error) {
+	cfg := buildUpsertConfig(opts)
 	insertedRightIDs := lo.Uniq(rightIDs) // защита от дублей
 
 	// Блокируем родительскую запись
@@ -45,27 +56,18 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID) 
 		Where(sq.Eq{r.cfg.LeftColumnID: leftID}).
 		Suffix("RETURNING " + r.cfg.RightColumnID)
 
-	//// Вставляем связи
-	//qInsert := fmt.Sprintf(`
-	//   INSERT INTO %s (%s, %s)
-	//   SELECT $1, input.%s
-	//   FROM unnest($2) AS input(%s) -- unnest($2::int[])
-	//   JOIN %s right ON right.id = input.%s AND right.deleted_at IS NULL
-	//`, r.cfg.LinkTable, r.cfg.LeftColumnID, r.cfg.RightColumnID,
-	//	r.cfg.RightColumnID,
-	//	r.cfg.RightColumnID,
-	//	r.cfg.RightTable,
-	//	r.cfg.RightColumnID,
-	//)
-
-	qbInsert := pgo.Sq().
-		Insert(r.cfg.LinkTable).
-		Columns(r.cfg.LeftColumnID, r.cfg.RightColumnID).
-		Select(sq.
-			Select("$1", "input."+r.cfg.RightColumnID).
-			From(fmt.Sprintf("UNNEST($2) AS input(%s)", r.cfg.RightColumnID)).
-			Join(fmt.Sprintf("%s right ON right.id = input.%s AND right.deleted_at IS NULL", r.cfg.RightTable, r.cfg.RightColumnID)),
-		)
+	// Вставляем связи
+	qInsert := fmt.Sprintf(`
+	  INSERT INTO %s (%s, %s)
+	  SELECT $1, input.%s
+	  FROM unnest($2) AS input(%s) -- unnest($2::int[])
+	  JOIN %s right ON right.id = input.%s AND right.deleted_at IS NULL
+	`, r.cfg.LinkTable, r.cfg.LeftColumnID, r.cfg.RightColumnID,
+		r.cfg.RightColumnID,
+		r.cfg.RightColumnID,
+		r.cfg.RightTable,
+		r.cfg.RightColumnID,
+	)
 
 	return pgo.GetInTx(ctx, r.db, func(ctx context.Context) (bool, error) {
 		var dummy TID
@@ -76,24 +78,61 @@ func (r *Resource[TID]) Upsert(ctx context.Context, leftID TID, rightIDs []TID) 
 			return false, fmt.Errorf("lock: %w", err)
 		}
 
+		if err := cfg.preCheck(ctx); err != nil {
+			return false, fmt.Errorf("pre check: %w", err)
+		}
+
 		var deletedRightIDs []TID
 		if err := r.db.Select(ctx, qbDelete, &deletedRightIDs); err != nil {
 			return false, fmt.Errorf("delete: %w", err)
 		}
 
+		var isModified bool
 		if len(insertedRightIDs) == 0 {
-			return len(deletedRightIDs) != 0, nil
+			isModified = len(deletedRightIDs) != 0
+		} else {
+			tag, err := r.db.Exec(ctx, pgo.Sql(qInsert, leftID, insertedRightIDs))
+			if err != nil {
+				return false, fmt.Errorf("insert: %w", err)
+			}
+			if tag.RowsAffected() != int64(len(insertedRightIDs)) {
+				return false, r.cfg.DataIntegrityErr
+			}
+
+			isModified = !lo.ElementsMatch(insertedRightIDs, deletedRightIDs)
 		}
 
-		//tag, err := r.db.Exec(ctx, pgo.Sql(qInsert, leftID, insertedRightIDs))
-		tag, err := r.db.Exec(ctx, qbInsert)
-		if err != nil {
-			return false, fmt.Errorf("insert: %w", err)
-		}
-		if tag.RowsAffected() != int64(len(insertedRightIDs)) {
-			return false, r.cfg.DataIntegrityErr
+		if err := cfg.afterUpsert(ctx, isModified); err != nil {
+			return false, fmt.Errorf("after upsert: %w", err)
 		}
 
-		return !lo.ElementsMatch(insertedRightIDs, deletedRightIDs), nil
+		return isModified, nil
 	})
+}
+
+func buildUpsertConfig(opts []UpsertOption) *upsertConfig {
+	cfg := &upsertConfig{
+		preCheck:    func(_ context.Context) error { return nil },
+		afterUpsert: func(_ context.Context, _ bool) error { return nil },
+	}
+
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	return cfg
+}
+
+type UpsertOption func(cfg *upsertConfig)
+
+func WithPreCheckUnset(preCheck resource.QueryFunc) UpsertOption {
+	return func(cfg *upsertConfig) {
+		cfg.preCheck = preCheck
+	}
+}
+
+func WithAfterUnset(afterUnset afterUpsertFunc) UpsertOption {
+	return func(cfg *upsertConfig) {
+		cfg.afterUpsert = afterUnset
+	}
 }
