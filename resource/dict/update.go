@@ -13,8 +13,9 @@ import (
 )
 
 type updateConfig struct {
-	preCheck    resource.QueryFunc
-	afterUpdate resource.QueryFunc
+	preCheck     resource.QueryFunc
+	afterUpdate  resource.QueryFunc
+	compositeKey map[string]any
 }
 
 // Update обновляет поля записи по ID, если новые значения отличаются от существующих.
@@ -34,6 +35,10 @@ func (r *Resource[TM, TID]) Update(ctx context.Context, id TID, data map[string]
 		}).
 		Suffix("FOR UPDATE")
 
+	if len(cfg.compositeKey) > 0 {
+		qbExists = qbExists.Where(cfg.compositeKey)
+	}
+
 	changes := lo.Map(lo.Entries(data), func(e lo.Entry[string, any], _ int) sq.Sqlizer {
 		return sq.Expr(fmt.Sprintf("%s IS DISTINCT FROM ?", e.Key), e.Value)
 	})
@@ -47,6 +52,10 @@ func (r *Resource[TM, TID]) Update(ctx context.Context, id TID, data map[string]
 			"deleted_at": nil,
 		}).
 		Where(sq.Or(changes))
+
+	if len(cfg.compositeKey) > 0 {
+		qbUpdate = qbUpdate.Where(cfg.compositeKey)
+	}
 
 	return pgo.GetInTx(ctx, r.db, func(ctx context.Context) (bool, error) {
 		var dummy TID
@@ -79,8 +88,9 @@ func (r *Resource[TM, TID]) Update(ctx context.Context, id TID, data map[string]
 
 func buildUpdateConfig(opts []UpdateOption) *updateConfig {
 	cfg := &updateConfig{
-		preCheck:    func(_ context.Context) error { return nil },
-		afterUpdate: func(_ context.Context) error { return nil },
+		preCheck:     func(_ context.Context) error { return nil },
+		afterUpdate:  func(_ context.Context) error { return nil },
+		compositeKey: nil,
 	}
 
 	for _, opt := range opts {
@@ -101,5 +111,11 @@ func WithUpdatePreCheck(preCheck resource.QueryFunc) UpdateOption {
 func WithAfterUpdate(afterUpdate resource.QueryFunc) UpdateOption {
 	return func(cfg *updateConfig) {
 		cfg.afterUpdate = afterUpdate
+	}
+}
+
+func WithUpdateCompositeKey(compositeKey map[string]any) UpdateOption {
+	return func(cfg *updateConfig) {
+		cfg.compositeKey = compositeKey
 	}
 }
