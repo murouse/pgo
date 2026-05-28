@@ -10,7 +10,8 @@ import (
 )
 
 type deleteConfig struct {
-	preCheck resource.QueryFunc
+	preCheck     resource.QueryFunc
+	compositeKey map[string]any
 }
 
 // Delete помечает запись как удаленную (soft delete) после выполнения проверок preCheck.
@@ -27,6 +28,10 @@ func (r *Resource[TM, TID]) Delete(ctx context.Context, id TID, opts ...DeleteOp
 			"id":         id,
 			"deleted_at": nil,
 		})
+
+	if len(cfg.compositeKey) > 0 {
+		qb = qb.Where(cfg.compositeKey)
+	}
 
 	return pgo.InTx(ctx, r.db, func(ctx context.Context) error {
 		if err := cfg.preCheck(ctx); err != nil {
@@ -47,7 +52,8 @@ func (r *Resource[TM, TID]) Delete(ctx context.Context, id TID, opts ...DeleteOp
 
 func buildDeleteConfig(opts []DeleteOption) *deleteConfig {
 	cfg := &deleteConfig{
-		preCheck: func(_ context.Context) error { return nil },
+		preCheck:     func(_ context.Context) error { return nil },
+		compositeKey: nil,
 	}
 
 	for _, opt := range opts {
@@ -62,5 +68,11 @@ type DeleteOption func(cfg *deleteConfig)
 func WithDeletePreCheck(preCheck resource.QueryFunc) DeleteOption {
 	return func(cfg *deleteConfig) {
 		cfg.preCheck = preCheck
+	}
+}
+
+func WithCompositeKey(compositeKey map[string]any) DeleteOption {
+	return func(cfg *deleteConfig) {
+		cfg.compositeKey = compositeKey
 	}
 }
