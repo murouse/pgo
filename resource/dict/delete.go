@@ -71,7 +71,7 @@ func WithDeletePreCheck(preCheck resource.QueryFunc) DeleteOption {
 	}
 }
 
-func WithCompositeKey(compositeKey map[string]any) DeleteOption {
+func WithDeleteCompositeKey(compositeKey map[string]any) DeleteOption {
 	return func(cfg *deleteConfig) {
 		cfg.compositeKey = compositeKey
 	}
